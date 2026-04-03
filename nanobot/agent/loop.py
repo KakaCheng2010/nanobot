@@ -25,6 +25,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.milvus import MilvusSearchTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.agent.tools.ssh import SshExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -34,7 +35,13 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, MilvusToolConfig, WebSearchConfig
+    from nanobot.config.schema import (
+        ChannelsConfig,
+        ExecToolConfig,
+        MilvusToolConfig,
+        SshToolConfig,
+        WebSearchConfig,
+    )
     from nanobot.cron.service import CronService
 
 
@@ -94,7 +101,8 @@ class _LoopHook(AgentHook):
             tool_hint = self._loop._strip_think(self._loop._tool_hint(context.tool_calls))
             await self._on_progress(tool_hint, tool_hint=True)
         for tc in context.tool_calls:
-            args_str = json.dumps(tc.arguments, ensure_ascii=False)
+            safe_args = self._loop._redact_tool_arguments(tc.arguments)
+            args_str = json.dumps(safe_args, ensure_ascii=False)
             logger.info("Tool call: {}({})", tc.name, args_str[:200])
         self._loop._set_tool_context(self._channel, self._chat_id, self._message_id)
 
@@ -178,6 +186,7 @@ class AgentLoop:
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
         milvus_config: MilvusToolConfig | None = None,
+        ssh_config: SshToolConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
@@ -186,7 +195,12 @@ class AgentLoop:
         timezone: str | None = None,
         hooks: list[AgentHook] | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig, MilvusToolConfig, WebSearchConfig
+        from nanobot.config.schema import (
+            ExecToolConfig,
+            MilvusToolConfig,
+            SshToolConfig,
+            WebSearchConfig,
+        )
 
         self.bus = bus
         self.channels_config = channels_config
@@ -199,6 +213,7 @@ class AgentLoop:
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.milvus_config = milvus_config or MilvusToolConfig()
+        self.ssh_config = ssh_config or SshToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
@@ -264,6 +279,9 @@ class AgentLoop:
         # Milvus 作为可选知识库工具，只有显式开启时才注册到 agent。
         if self.milvus_config.enabled:
             self.tools.register(MilvusSearchTool(self.milvus_config))
+        # SSH ???????? Linux ????????????????
+        if self.ssh_config.enabled:
+            self.tools.register(SshExecTool(workspace=self.workspace, config=self.ssh_config))
         self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
@@ -301,6 +319,30 @@ class AgentLoop:
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+
+    @staticmethod
+    def _redact_tool_arguments(arguments: Any) -> Any:
+        """????????????? SSH ??????????"""
+        sensitive_keys = {
+            "password",
+            "token",
+            "api_key",
+            "apikey",
+            "private_key_passphrase",
+            "passphrase",
+            "secret",
+        }
+        if isinstance(arguments, dict):
+            redacted: dict[str, Any] = {}
+            for key, value in arguments.items():
+                if key.lower() in sensitive_keys:
+                    redacted[key] = "***"
+                else:
+                    redacted[key] = AgentLoop._redact_tool_arguments(value)
+            return redacted
+        if isinstance(arguments, list):
+            return [AgentLoop._redact_tool_arguments(item) for item in arguments]
+        return arguments
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:

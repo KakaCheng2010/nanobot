@@ -157,6 +157,20 @@ class MilvusToolConfig(Base):
     embedding_api_base: str = ""
     embedding_dimensions: int = 0
 
+
+class SshToolConfig(Base):
+    """SSH 远程执行工具配置。"""
+
+    enabled: bool = False
+    connect_timeout: int = 10
+    command_timeout: int = 60
+    auto_add_host_key: bool = True
+    screenshot_subdir: str = "ssh_screenshots"
+    screenshot_columns: int = 120
+    screenshot_rows: int = 40
+    max_screenshot_chars: int = 12000
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -175,6 +189,7 @@ class ToolsConfig(Base):
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     milvus: MilvusToolConfig = Field(default_factory=MilvusToolConfig)
+    ssh: SshToolConfig = Field(default_factory=SshToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
