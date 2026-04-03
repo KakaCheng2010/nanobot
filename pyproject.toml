@@ -61,6 +61,11 @@ weixin = [
     "qrcode[pil]>=8.0",
     "pycryptodome>=3.20.0",
 ]
+milvus = [
+    "pymilvus>=2.5.0,<3.0.0",
+    "pypdf>=5.0.0,<6.0.0",
+    "python-docx>=1.1.2,<2.0.0",
+]
 
 matrix = [
     "matrix-nio[e2e]>=0.25.2",

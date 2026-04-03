@@ -137,6 +137,26 @@ class ExecToolConfig(Base):
     timeout: int = 60
     path_append: str = ""
 
+
+class MilvusToolConfig(Base):
+    """Milvus 检索工具配置。"""
+
+    enabled: bool = False
+    uri: str = "http://127.0.0.1:19530"
+    token: str = ""
+    db_name: str = ""
+    collection_name: str = ""
+    vector_field: str = "embedding"
+    text_field: str = "text"
+    output_fields: list[str] = Field(default_factory=list)
+    top_k: int = 5
+    metric_type: str = "COSINE"
+    search_params: dict[str, object] = Field(default_factory=dict)
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str = ""
+    embedding_api_base: str = ""
+    embedding_dimensions: int = 0
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -154,6 +174,7 @@ class ToolsConfig(Base):
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    milvus: MilvusToolConfig = Field(default_factory=MilvusToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
