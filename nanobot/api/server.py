@@ -1,8 +1,4 @@
-"""OpenAI-compatible HTTP API server for a fixed nanobot session.
-
-Provides /v1/chat/completions and /v1/models endpoints.
-All requests route to a single persistent API session.
-"""
+﻿"""OpenAI-compatible HTTP API server for nanobot."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiohttp import web
+from aiohttp import ClientConnectionResetError, web
 from loguru import logger
 
 API_SESSION_KEY = "api:default"
@@ -22,27 +18,25 @@ API_CHAT_ID = "default"
 _MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
 
 
-# ---------------------------------------------------------------------------
-# Response helpers
-# ---------------------------------------------------------------------------
-
 def _with_cors(resp: web.StreamResponse) -> web.StreamResponse:
-    """统一给响应补上浏览器直连需要的 CORS 头。"""
+    """Attach CORS headers for browser clients."""
     for key, value in _CORS_HEADERS.items():
         resp.headers[key] = value
     return resp
 
 
 def _error_json(status: int, message: str, err_type: str = "invalid_request_error") -> web.Response:
-    return _with_cors(web.json_response(
-        {"error": {"message": message, "type": err_type, "code": status}},
-        status=status,
-    ))
+    return _with_cors(
+        web.json_response(
+            {"error": {"message": message, "type": err_type, "code": status}},
+            status=status,
+        )
+    )
 
 
 def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
@@ -63,8 +57,8 @@ def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
 
 
 def _chat_completion_chunk(delta: str, model: str, *, finish_reason: str | None = None) -> dict[str, Any]:
-    """构造流式响应片段，格式与 OpenAI SSE 兼容。"""
-    payload: dict[str, Any] = {
+    """Build one OpenAI-style SSE chunk."""
+    return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
@@ -77,7 +71,6 @@ def _chat_completion_chunk(delta: str, model: str, *, finish_reason: str | None 
             }
         ],
     }
-    return payload
 
 
 def _response_text(value: Any) -> str:
@@ -90,7 +83,7 @@ def _response_text(value: Any) -> str:
 
 
 def _parse_bool(value: Any) -> bool:
-    """兼容 JSON / FormData 中的布尔字段。"""
+    """Accept booleans from JSON or multipart form values."""
     if isinstance(value, bool):
         return value
     if value is None:
@@ -99,14 +92,14 @@ def _parse_bool(value: Any) -> bool:
 
 
 def _sanitize_filename(name: str | None) -> str:
-    """只保留文件名主体，避免路径穿越和奇怪字符。"""
+    """Keep uploaded filenames safe and local-only."""
     raw = Path(name or "upload.bin").name.strip() or "upload.bin"
     cleaned = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in raw)
     return cleaned or "upload.bin"
 
 
 def _ensure_upload_dir(request: web.Request) -> Path:
-    """把 API 上传统一落到 workspace 下，便于 agent 后续读取。"""
+    """Store API uploads under the workspace so tools can reuse them."""
     agent_loop = request.app["agent_loop"]
     upload_dir = Path(agent_loop.workspace) / "uploads" / "api"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +107,7 @@ def _ensure_upload_dir(request: web.Request) -> Path:
 
 
 async def _save_uploaded_file(part: Any, upload_dir: Path) -> str:
-    """把浏览器上传的文件保存到本地，并返回绝对路径。"""
+    """Persist one uploaded file and return its absolute path."""
     original = _sanitize_filename(getattr(part, "filename", None))
     save_name = f"{int(time.time())}_{secrets.token_hex(4)}_{original}"
     file_path = upload_dir / save_name
@@ -139,7 +132,7 @@ async def _save_uploaded_file(part: Any, upload_dir: Path) -> str:
 
 
 async def _parse_json_request(request: web.Request) -> tuple[str, str, str | None, list[str], bool]:
-    """兼容原有 OpenAI 风格 JSON 请求。"""
+    """Handle the original OpenAI-style JSON request format."""
     try:
         body = await request.json()
     except Exception:
@@ -155,7 +148,6 @@ async def _parse_json_request(request: web.Request) -> tuple[str, str, str | Non
 
     user_content = message.get("content", "")
     if isinstance(user_content, list):
-        # 现有 API 仍以文本为主；图片上传改由 multipart/form-data 处理。
         user_content = " ".join(
             part.get("text", "") for part in user_content if part.get("type") == "text"
         )
@@ -170,7 +162,7 @@ async def _parse_json_request(request: web.Request) -> tuple[str, str, str | Non
 
 
 async def _parse_multipart_request(request: web.Request) -> tuple[str, str, str | None, list[str], bool]:
-    """支持浏览器表单上传：文本字段 + 多个文件字段。"""
+    """Handle browser form uploads with text plus multiple files."""
     reader = await request.multipart()
     upload_dir = _ensure_upload_dir(request)
 
@@ -206,26 +198,34 @@ async def _parse_multipart_request(request: web.Request) -> tuple[str, str, str 
 
 
 async def _parse_request(request: web.Request) -> tuple[str, str, str | None, list[str], bool]:
-    """同时兼容 JSON 请求和浏览器 FormData 上传。"""
+    """Support both JSON requests and multipart uploads."""
     content_type = (request.content_type or "").lower()
     if content_type.startswith("multipart/"):
         return await _parse_multipart_request(request)
     return await _parse_json_request(request)
 
 
-# ---------------------------------------------------------------------------
-# Route handlers
-# ---------------------------------------------------------------------------
-
 async def handle_options(_request: web.Request) -> web.Response:
-    """响应浏览器预检请求。"""
+    """Reply to browser preflight requests."""
     return _with_cors(web.Response(status=204))
 
 
-async def _write_sse(resp: web.StreamResponse, payload: dict[str, Any] | str) -> None:
-    """把一条 SSE 事件写回浏览器。"""
+def _is_client_disconnect(exc: BaseException) -> bool:
+    """Treat browser-side stream closes as a normal end state."""
+    return isinstance(exc, (ConnectionResetError, BrokenPipeError, ClientConnectionResetError))
+
+
+async def _write_sse(resp: web.StreamResponse, payload: dict[str, Any] | str) -> bool:
+    """Write one SSE event to the client."""
     data = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    await resp.write(f"data: {data}\n\n".encode("utf-8"))
+    try:
+        await resp.write(f"data: {data}\n\n".encode("utf-8"))
+        return True
+    except Exception as exc:
+        if _is_client_disconnect(exc):
+            logger.info("SSE client disconnected while writing chunk")
+            return False
+        raise
 
 
 async def _stream_chat_completions(
@@ -239,29 +239,32 @@ async def _stream_chat_completions(
     user_content: str,
     media_paths: list[str],
 ) -> web.StreamResponse:
-    """把 agent 的增量输出转成浏览器可消费的 SSE。"""
-    resp = _with_cors(web.StreamResponse(
-        status=200,
-        headers={
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    ))
+    """Translate agent streaming output into SSE."""
+    resp = _with_cors(
+        web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+    )
     await resp.prepare(request)
 
     emitted_chunks = 0
+    client_disconnected = False
 
     async def on_stream(delta: str) -> None:
-        nonlocal emitted_chunks
-        if not delta:
+        nonlocal emitted_chunks, client_disconnected
+        if not delta or client_disconnected:
             return
         emitted_chunks += 1
-        # 这里只向前端发送纯增量文本，tool-call 分段切换由 on_stream_end 内部消化。
-        await _write_sse(resp, _chat_completion_chunk(delta, model_name))
+        ok = await _write_sse(resp, _chat_completion_chunk(delta, model_name))
+        if not ok:
+            client_disconnected = True
 
     async def on_stream_end(*, resuming: bool = False) -> None:
-        # resuming=True 表示模型即将转去执行工具，前端不需要额外展示这个边界。
         if resuming:
             return
 
@@ -281,35 +284,58 @@ async def _stream_chat_completions(
             )
             final_text = _response_text(response)
 
-            # 某些 provider 还没有原生流式实现，可能最后只返回整段文本。
-            if final_text and emitted_chunks == 0:
-                await _write_sse(resp, _chat_completion_chunk(final_text, model_name))
+            if final_text and emitted_chunks == 0 and not client_disconnected:
+                ok = await _write_sse(resp, _chat_completion_chunk(final_text, model_name))
+                if not ok:
+                    client_disconnected = True
 
-        await _write_sse(resp, _chat_completion_chunk("", model_name, finish_reason="stop"))
-        await _write_sse(resp, "[DONE]")
+        if not client_disconnected:
+            ok = await _write_sse(resp, _chat_completion_chunk("", model_name, finish_reason="stop"))
+            if ok:
+                await _write_sse(resp, "[DONE]")
+            else:
+                client_disconnected = True
     except asyncio.TimeoutError:
-        await _write_sse(resp, _chat_completion_chunk(
-            f"\n[Timed out after {timeout_s}s]",
-            model_name,
-            finish_reason="stop",
-        ))
-        await _write_sse(resp, "[DONE]")
+        if not client_disconnected:
+            ok = await _write_sse(
+                resp,
+                _chat_completion_chunk(
+                    f"\n[Timed out after {timeout_s}s]",
+                    model_name,
+                    finish_reason="stop",
+                ),
+            )
+            if ok:
+                await _write_sse(resp, "[DONE]")
     except Exception as exc:
-        logger.exception("Streaming API error for session {}", session_key)
-        await _write_sse(resp, _chat_completion_chunk(
-            f"\n[Error: {exc}]",
-            model_name,
-            finish_reason="stop",
-        ))
-        await _write_sse(resp, "[DONE]")
+        if _is_client_disconnect(exc):
+            logger.info("SSE client disconnected for session {}", session_key)
+        else:
+            logger.exception("Streaming API error for session {}", session_key)
+            if not client_disconnected:
+                ok = await _write_sse(
+                    resp,
+                    _chat_completion_chunk(
+                        f"\n[Error: {exc}]",
+                        model_name,
+                        finish_reason="stop",
+                    ),
+                )
+                if ok:
+                    await _write_sse(resp, "[DONE]")
     finally:
-        await resp.write_eof()
+        if not client_disconnected:
+            try:
+                await resp.write_eof()
+            except Exception as exc:
+                if not _is_client_disconnect(exc):
+                    raise
 
     return resp
 
 
 async def handle_chat_completions(request: web.Request) -> web.Response:
-    """POST /v1/chat/completions"""
+    """POST /v1/chat/completions."""
     try:
         user_content, session_id, requested_model, media_paths, wants_stream = await _parse_request(request)
     except ValueError as exc:
@@ -345,7 +371,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             media_paths=media_paths,
         )
 
-    _FALLBACK = "I've completed processing but have no response to give."
+    fallback = "I've completed processing but have no response to give."
 
     try:
         async with session_lock:
@@ -363,10 +389,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                 response_text = _response_text(response)
 
                 if not response_text or not response_text.strip():
-                    logger.warning(
-                        "Empty response for session {}, retrying",
-                        session_key,
-                    )
+                    logger.warning("Empty response for session {}, retrying", session_key)
                     retry_response = await asyncio.wait_for(
                         agent_loop.process_direct(
                             content=user_content,
@@ -383,7 +406,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                             "Empty response after retry for session {}, using fallback",
                             session_key,
                         )
-                        response_text = _FALLBACK
+                        response_text = fallback
 
             except asyncio.TimeoutError:
                 return _error_json(504, f"Request timed out after {timeout_s}s")
@@ -398,43 +421,38 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
 
 
 async def handle_models(request: web.Request) -> web.Response:
-    """GET /v1/models"""
+    """GET /v1/models."""
     model_name = request.app.get("model_name", "nanobot")
-    return _with_cors(web.json_response({
-        "object": "list",
-        "data": [
+    return _with_cors(
+        web.json_response(
             {
-                "id": model_name,
-                "object": "model",
-                "created": 0,
-                "owned_by": "nanobot",
+                "object": "list",
+                "data": [
+                    {
+                        "id": model_name,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "nanobot",
+                    }
+                ],
             }
-        ],
-    }))
+        )
+    )
 
 
 async def handle_health(_request: web.Request) -> web.Response:
-    """GET /health"""
+    """GET /health."""
     return _with_cors(web.json_response({"status": "ok"}))
 
 
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
-
 def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float = 120.0) -> web.Application:
-    """Create the aiohttp application.
-
-    Args:
-        agent_loop: An initialized AgentLoop instance.
-        model_name: Model name reported in responses.
-        request_timeout: Per-request timeout in seconds.
-    """
+    """Create the aiohttp application."""
     app = web.Application(client_max_size=_MAX_UPLOAD_SIZE)
     app["agent_loop"] = agent_loop
+    app["session_manager"] = agent_loop.sessions
     app["model_name"] = model_name
     app["request_timeout"] = request_timeout
-    app["session_locks"] = {}  # per-user locks, keyed by session_key
+    app["session_locks"] = {}
 
     app.router.add_route("OPTIONS", "/v1/chat/completions", handle_options)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
@@ -442,4 +460,8 @@ def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float =
     app.router.add_get("/v1/models", handle_models)
     app.router.add_route("OPTIONS", "/health", handle_options)
     app.router.add_get("/health", handle_health)
+
+    from nanobot.api.session_api import register_session_routes
+
+    register_session_routes(app)
     return app

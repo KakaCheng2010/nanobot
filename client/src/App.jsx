@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
+import SessionSidebar from "./SessionSidebar.jsx";
+import { createSession, deleteSession, getSession, listSessions } from "./sessionApi.js";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:8900";
-
-function createSessionId() {
-  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function formatTime(value) {
   return new Date(value).toLocaleTimeString("zh-CN", {
@@ -36,12 +34,14 @@ function parseSseEvents(buffer) {
 
 export default function App() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
-  const [sessionId, setSessionId] = useState(createSessionId());
+  const [sessionId, setSessionId] = useState("");
+  const [sessions, setSessions] = useState([]);
   const [model, setModel] = useState("");
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [error, setError] = useState("");
   const [useStream, setUseStream] = useState(true);
   const fileInputRef = useRef(null);
@@ -54,24 +54,87 @@ export default function App() {
     listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, loading]);
 
-  const previews = useMemo(() => {
-    return files
-      .filter((file) => file.type.startsWith("image/"))
-      .map((file) => ({
-        name: file.name,
-        url: URL.createObjectURL(file)
-      }));
-  }, [files]);
+  const previews = useMemo(
+    () =>
+      files
+        .filter((file) => file.type.startsWith("image/"))
+        .map((file) => ({
+          name: file.name,
+          url: URL.createObjectURL(file)
+        })),
+    [files]
+  );
+
+  useEffect(
+    () => () => {
+      previews.forEach((item) => URL.revokeObjectURL(item.url));
+    },
+    [previews]
+  );
+
+  async function refreshSessions(preferredSessionId = sessionId) {
+    const nextSessions = await listSessions(apiBase);
+    setSessions(nextSessions);
+
+    if (!nextSessions.length) {
+      const created = await createSession(apiBase);
+      setSessions([created]);
+      setSessionId(created.id);
+      setMessages([]);
+      return created.id;
+    }
+
+    const hasPreferred = preferredSessionId && nextSessions.some((item) => item.id === preferredSessionId);
+    const nextActiveSessionId = hasPreferred ? preferredSessionId : nextSessions[0].id;
+
+    if (nextActiveSessionId !== sessionId) {
+      setSessionId(nextActiveSessionId);
+    }
+    return nextActiveSessionId;
+  }
+
+  async function loadSession(targetSessionId) {
+    setSessionLoading(true);
+    setError("");
+    try {
+      const data = await getSession(apiBase, targetSessionId);
+      setSessionId(data.session.id);
+      setMessages(data.messages);
+      setSessions((prev) => {
+        const others = prev.filter((item) => item.id !== data.session.id);
+        return [data.session, ...others];
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载会话失败");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
+  async function initializeSessions() {
+    setSessionLoading(true);
+    setError("");
+    try {
+      const activeSessionId = await refreshSessions("");
+      if (activeSessionId) {
+        const data = await getSession(apiBase, activeSessionId);
+        setMessages(data.messages);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "初始化会话失败");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
 
   useEffect(() => {
-    return () => {
-      previews.forEach((item) => URL.revokeObjectURL(item.url));
-    };
-  }, [previews]);
+    initializeSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase]);
 
   async function appendStreamResponse(response, assistantId) {
     if (!response.body) {
-      throw new Error("浏览器不支持流式读取");
+      throw new Error("当前浏览器不支持流式读取");
     }
 
     const reader = response.body.getReader();
@@ -105,7 +168,6 @@ export default function App() {
           continue;
         }
 
-        // 流式模式下只更新最后一条 assistant 消息，避免不断创建新卡片。
         setMessages((prev) =>
           prev.map((message) =>
             message.id === assistantId
@@ -117,9 +179,47 @@ export default function App() {
     }
   }
 
+  async function handleCreateSession() {
+    setSessionLoading(true);
+    setError("");
+    try {
+      const created = await createSession(apiBase);
+      setSessions((prev) => [created, ...prev]);
+      setSessionId(created.id);
+      setMessages([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建会话失败");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
+  async function handleDeleteSession(targetSessionId) {
+    if (!window.confirm("确认删除这个历史会话吗？")) {
+      return;
+    }
+
+    setSessionLoading(true);
+    setError("");
+    try {
+      await deleteSession(apiBase, targetSessionId);
+      const nextActive = await refreshSessions(targetSessionId === sessionId ? "" : sessionId);
+      if (targetSessionId === sessionId && nextActive) {
+        const data = await getSession(apiBase, nextActive);
+        setMessages(data.messages);
+      } else if (!sessions.length) {
+        setMessages([]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除会话失败");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
-    if (loading) {
+    if (loading || sessionLoading) {
       return;
     }
 
@@ -136,7 +236,6 @@ export default function App() {
       size: file.size
     }));
 
-    // 先把用户消息和一个空的 assistant 占位都放进来，方便后面流式追加。
     setMessages((prev) => [
       ...prev,
       {
@@ -144,14 +243,14 @@ export default function App() {
         role: "user",
         content: text,
         files: localFiles,
-        createdAt: now
+        createdAt: new Date(now).toISOString()
       },
       {
         id: assistantId,
         role: "assistant",
         content: "",
         files: [],
-        createdAt: now + 1
+        createdAt: new Date(now + 1).toISOString()
       }
     ]);
 
@@ -197,6 +296,8 @@ export default function App() {
           )
         );
       }
+
+      await refreshSessions(sessionId);
     } catch (err) {
       const message = err instanceof Error ? err.message : "未知错误";
       setError(message);
@@ -213,72 +314,82 @@ export default function App() {
   }
 
   function handleFileChange(event) {
-    const nextFiles = Array.from(event.target.files || []);
-    setFiles(nextFiles);
+    setFiles(Array.from(event.target.files || []));
   }
 
   return (
     <div className="app-shell">
       <aside className="side-panel">
-        <h1>nanobot Client</h1>
-        <p className="panel-copy">
-          这个页面会直接调用 nanobot 的 <code>/v1/chat/completions</code>。
-          现在已经支持文本流式输出，上传的图片和文件会先由 API server 落到本地，再进入 agent 主流程。
-        </p>
-
-        <label className="field">
-          <span>API 地址</span>
-          <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
-        </label>
-
-        <label className="field">
-          <span>Session ID</span>
-          <div className="row">
-            <input value={sessionId} onChange={(e) => setSessionId(e.target.value)} />
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setSessionId(createSessionId())}
-            >
-              新建
-            </button>
-          </div>
-        </label>
-
-        <label className="field">
-          <span>模型名</span>
-          <input
-            placeholder="可留空，使用 nanobot 当前配置的模型"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-        </label>
-
-        <label className="field checkbox-field">
-          <input
-            type="checkbox"
-            checked={useStream}
-            onChange={(e) => setUseStream(e.target.checked)}
-          />
-          <span>启用流式输出</span>
-        </label>
-
-        <div className="tips">
-          <p>注意事项</p>
-          <ul>
-            <li>图片会作为多模态输入传给模型。</li>
-            <li>普通文件会先上传到本地，后续由 agent 按需读取。</li>
-            <li>流式输出使用 SSE，界面会边接收边追加回复。</li>
-          </ul>
+        <div className="brand-block">
+          <p className="brand-kicker">Nanobot Workspace</p>
+          <h1>会话与审计控制台</h1>
+          <p className="panel-copy">
+            左侧管理 SQLite 会话，右侧专注聊天与文件交互。整体保持一页完成，不再把操作挤成细长条。
+          </p>
         </div>
+
+        <section className="settings-card">
+          <label className="field">
+            <span>API 地址</span>
+            <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
+          </label>
+
+          <div className="settings-grid">
+            <label className="field">
+              <span>当前 Session ID</span>
+              <input value={sessionId} readOnly />
+            </label>
+
+            <label className="field">
+              <span>模型名</span>
+              <input
+                placeholder="可留空，使用当前配置模型"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+              />
+            </label>
+          </div>
+
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={useStream}
+              onChange={(event) => setUseStream(event.target.checked)}
+            />
+            <div>
+              <strong>启用流式输出</strong>
+              <p>边生成边显示，更适合长回复和工具执行反馈。</p>
+            </div>
+          </label>
+        </section>
+
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={sessionId}
+          loading={sessionLoading || loading}
+          onCreate={handleCreateSession}
+          onOpen={loadSession}
+          onDelete={handleDeleteSession}
+        />
       </aside>
 
       <main className="chat-panel">
+        <div className="chat-header">
+          <div>
+            <p className="chat-kicker">Active Session</p>
+            <h2>{sessionId || "未选择会话"}</h2>
+          </div>
+          <div className="chat-status-group">
+            {loading ? <span className="status-pill">处理中</span> : null}
+            {sessionLoading ? <span className="status-pill muted">同步会话</span> : null}
+          </div>
+        </div>
+
         <div className="message-list" ref={listRef}>
           {messages.length === 0 ? (
             <div className="empty-state">
               <h2>开始和 nanobot 对话</h2>
-              <p>你可以直接发文本，也可以上传图片或文件后一起提问。</p>
+              <p>先在左侧创建或打开一个会话，然后发送文本、图片或文件。</p>
             </div>
           ) : null}
 
@@ -288,7 +399,9 @@ export default function App() {
                 <strong>{message.role === "user" ? "你" : "nanobot"}</strong>
                 <time>{formatTime(message.createdAt)}</time>
               </header>
-              <div className="message-content">{message.content || (loading && message.role === "assistant" ? "..." : "（无文本）")}</div>
+              <div className="message-content">
+                {message.content || (loading && message.role === "assistant" ? "..." : "（无文本）")}
+              </div>
               {message.files?.length ? (
                 <ul className="file-list">
                   {message.files.map((file) => (
@@ -301,29 +414,22 @@ export default function App() {
               ) : null}
             </article>
           ))}
-
-          {loading ? <div className="loading">nanobot 正在处理...</div> : null}
         </div>
 
         <form className="composer" onSubmit={handleSubmit}>
           <textarea
             rows={4}
-            placeholder="输入问题，或上传图片/文件后一起提问"
+            placeholder="输入问题，或上传图片 / 文件后一并提问"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(event) => setInput(event.target.value)}
           />
 
           <div className="composer-bar">
             <label className="upload-button">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                onChange={handleFileChange}
-              />
+              <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} />
               选择文件
             </label>
-            <button type="submit" disabled={loading}>
+            <button type="submit" disabled={loading || sessionLoading || !sessionId}>
               {loading ? "发送中..." : "发送"}
             </button>
           </div>
