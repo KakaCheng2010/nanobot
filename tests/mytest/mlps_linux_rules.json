@@ -1,0 +1,217 @@
+[
+  {
+    "rule_id": "MLPS-LINUX-ACC-001",
+    "title": "禁止存在除 root 外的 UID=0 账户",
+    "category": "account",
+    "scope": "linux-host",
+    "summary": "Linux 主机不应存在除 root 外的 UID=0 超级权限账户。",
+    "requirement": "系统中只允许 root 账户的 UID 为 0，其他账户不得拥有等同 root 的系统权限。",
+    "check_method": "使用 awk -F: '($3 == 0) {print $1}' /etc/passwd 检查 UID=0 账户列表。",
+    "pass_condition": "检查结果仅包含 root，未发现其他 UID=0 账户。",
+    "fail_condition": "检查结果包含 root 之外的任意 UID=0 账户。",
+    "remediation": "删除无效的超级账户，或将其 UID 调整为非 0，并重新核查账户授权。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "uid=0",
+      "root",
+      "superuser",
+      "awk",
+      "/etc/passwd",
+      "账户权限",
+      "特权账户"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-ACC-002",
+    "title": "禁止存在空口令账户",
+    "category": "account",
+    "scope": "linux-host",
+    "summary": "Linux 主机不应启用空口令账户。",
+    "requirement": "系统用户必须配置有效口令或采用其他受控认证方式，不得存在空口令可登录账户。",
+    "check_method": "使用 awk -F: '($2 == \"\" ) {print $1}' /etc/shadow 或 passwd -S 用户名 检查口令状态。",
+    "pass_condition": "未发现空口令账户，所有启用账户均有有效认证配置。",
+    "fail_condition": "发现任意空口令账户，或口令状态异常导致可绕过认证。",
+    "remediation": "为相关账户设置强口令，禁用无效账户，并核查认证策略。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "空口令",
+      "passwd status",
+      "/etc/shadow",
+      "awk",
+      "账户认证",
+      "密码为空"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-ACC-003",
+    "title": "禁止长期启用默认账户或测试账户",
+    "category": "account",
+    "scope": "linux-host",
+    "summary": "默认账户、共享账户和测试账户不应长期启用。",
+    "requirement": "系统应清理无业务必要的默认账户、测试账户和共享账户，保留账户需有明确用途和责任归属。",
+    "check_method": "结合 getent passwd、lastlog、chage -l 和业务清单检查默认账户、测试账户、长期未使用账户。",
+    "pass_condition": "未发现无业务必要的默认账户、测试账户或长期未使用仍启用的账户。",
+    "fail_condition": "发现默认账户、测试账户、共享账户或长期未使用账户处于启用状态。",
+    "remediation": "禁用或删除无业务必要账户，保留账户需补充责任人和用途说明。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "默认账户",
+      "测试账户",
+      "共享账户",
+      "lastlog",
+      "chage",
+      "账户清理",
+      "长期未使用"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-PWD-001",
+    "title": "口令最小长度不低于 8 位",
+    "category": "password",
+    "scope": "linux-host",
+    "summary": "系统应配置不少于 8 位的口令最小长度。",
+    "requirement": "口令策略应设置最小长度不低于 8 位，并在 PAM 或口令质量配置中生效。",
+    "check_method": "检查 /etc/security/pwquality.conf、/etc/pam.d/system-auth、/etc/pam.d/common-password 中 minlen 配置。",
+    "pass_condition": "minlen 或等效配置值大于等于 8，且策略已生效。",
+    "fail_condition": "未配置最小长度，或最小长度小于 8。",
+    "remediation": "在口令质量配置中设置 minlen>=8，并重新加载或验证 PAM 策略。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "minlen",
+      "pwquality",
+      "pam",
+      "口令长度",
+      "密码长度",
+      "common-password"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-PWD-002",
+    "title": "口令复杂度应包含多类字符",
+    "category": "password",
+    "scope": "linux-host",
+    "summary": "系统应启用口令复杂度策略，避免弱口令。",
+    "requirement": "口令应至少包含数字、大小写字母、特殊字符中的多种类别，并通过口令质量模块进行约束。",
+    "check_method": "检查 pwquality.conf 中 dcredit、ucredit、lcredit、ocredit 配置，或检查 pam_pwquality.so 参数。",
+    "pass_condition": "已配置明确的复杂度要求，且至少要求多类字符组合。",
+    "fail_condition": "未配置复杂度要求，或允许过于简单的弱口令。",
+    "remediation": "启用 pam_pwquality 或等效模块，并配置数字、大小写、特殊字符等约束。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "dcredit",
+      "ucredit",
+      "lcredit",
+      "ocredit",
+      "pam_pwquality",
+      "弱口令",
+      "复杂度"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-PWD-003",
+    "title": "口令应定期更换",
+    "category": "password",
+    "scope": "linux-host",
+    "summary": "系统应配置口令有效期和定期更换策略。",
+    "requirement": "用户口令应设置最大使用期限，并在到期前提醒或强制变更。",
+    "check_method": "检查 /etc/login.defs 中 PASS_MAX_DAYS，或使用 chage -l 用户名 查看口令有效期。",
+    "pass_condition": "已配置明确的最大口令有效期，且未设置为无限期长期有效。",
+    "fail_condition": "未配置口令有效期，或口令长期不过期。",
+    "remediation": "设置 PASS_MAX_DAYS 等策略，并对长期不过期账户进行整改。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "PASS_MAX_DAYS",
+      "chage",
+      "密码过期",
+      "口令有效期",
+      "定期更换"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-PWD-004",
+    "title": "应启用登录失败锁定策略",
+    "category": "password",
+    "scope": "linux-host",
+    "summary": "系统应限制连续失败登录次数，降低暴力破解风险。",
+    "requirement": "系统应配置登录失败锁定策略，连续失败达到阈值后锁定账户或认证入口，并设置解锁策略。",
+    "check_method": "检查 faillock、pam_faillock.so、pam_tally2、deny、unlock_time 等配置。",
+    "pass_condition": "已配置连续失败锁定阈值，例如 deny>=3，且存在合理解锁机制。",
+    "fail_condition": "未启用失败锁定策略，或阈值过宽导致暴力破解防护不足。",
+    "remediation": "启用 faillock 或等效机制，配置失败次数阈值和解锁时间。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "faillock",
+      "pam_faillock",
+      "pam_tally2",
+      "deny",
+      "unlock_time",
+      "登录失败",
+      "暴力破解"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-FW-001",
+    "title": "主机防火墙应处于启用状态",
+    "category": "firewall",
+    "scope": "linux-host",
+    "summary": "Linux 主机应启用本机防火墙，作为基本访问控制边界。",
+    "requirement": "系统应启用 firewalld、ufw、iptables 等至少一种有效防火墙机制，并保持运行。",
+    "check_method": "检查 systemctl status firewalld、ufw status、iptables -L 或 nft list ruleset。",
+    "pass_condition": "至少一种主机防火墙处于启用并生效状态。",
+    "fail_condition": "未启用任何主机防火墙，或防火墙服务已停止失效。",
+    "remediation": "启用主机防火墙服务并验证规则已加载生效。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "firewalld",
+      "ufw",
+      "iptables",
+      "nftables",
+      "防火墙启用",
+      "systemctl status firewalld"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-FW-002",
+    "title": "防火墙默认策略应限制不必要访问",
+    "category": "firewall",
+    "scope": "linux-host",
+    "summary": "防火墙默认策略应采用拒绝或限制式控制，而非完全放行。",
+    "requirement": "系统防火墙默认入站策略应限制不必要访问，避免默认 ACCEPT 全开放。",
+    "check_method": "检查 firewalld 默认 zone、iptables 默认链策略、ufw default deny 配置。",
+    "pass_condition": "默认策略为 reject、drop 或明确限制式访问控制。",
+    "fail_condition": "默认策略为 accept 或近似全开放，未形成有效边界控制。",
+    "remediation": "将默认入站策略调整为 deny、reject 或 drop，并按业务逐项放行。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "default deny",
+      "drop",
+      "reject",
+      "ACCEPT",
+      "默认策略",
+      "入站控制",
+      "iptables policy"
+    ]
+  },
+  {
+    "rule_id": "MLPS-LINUX-FW-003",
+    "title": "仅开放业务必需端口和服务",
+    "category": "firewall",
+    "scope": "linux-host",
+    "summary": "主机对外监听端口应最小化，只保留业务必需服务。",
+    "requirement": "系统应最小化开放端口，仅允许与业务直接相关且已审批的服务对外监听。",
+    "check_method": "使用 ss -tulnp、netstat -tulnp、firewall-cmd --list-all 检查监听端口和放行服务。",
+    "pass_condition": "仅存在业务必需监听端口，未发现无关高风险服务对外开放。",
+    "fail_condition": "存在无业务依据的开放端口、测试端口或高风险服务暴露。",
+    "remediation": "关闭无关服务，收缩放行规则，并对保留端口建立审批清单。",
+    "source": "等保 2.0 基线摘要",
+    "keywords": [
+      "ss -tulnp",
+      "netstat",
+      "开放端口",
+      "监听端口",
+      "业务必需",
+      "端口最小化",
+      "firewall-cmd"
+    ]
+  }
+]

@@ -69,6 +69,7 @@ milvus = [
 ssh = [
     "paramiko>=3.5.0,<4.0.0",
     "pillow>=11.0.0,<12.0.0",
+    "pywin32>=308; platform_system == 'Windows'",
 ]
 
 matrix = [
