@@ -50,10 +50,10 @@ export default function SessionSidebar({
               onClick={() => onOpen(session.id)}
               disabled={loading && session.id !== activeSessionId}
             >
-              <div className="session-main-top">
+              {/*<div className="session-main-top">
                 <strong>{session.title || "新会话"}</strong>
                 <small>{formatSessionTime(session.updatedAt)}</small>
-              </div>
+              </div>*/}
               <span>{session.preview || "暂无消息"}</span>
               <div className="session-main-bottom">
                 <small>{session.messageCount} 条消息</small>

@@ -321,7 +321,7 @@ export default function App() {
     <div className="app-shell">
       <aside className="side-panel">
         <div className="brand-block">
-          <p className="brand-kicker">Nanobot Workspace</p>
+          <p className="brand-kicker">Workspace</p>
           <h1>会话与审计控制台</h1>
           <p className="panel-copy">
             左侧管理 SQLite 会话，右侧专注聊天与文件交互。整体保持一页完成，不再把操作挤成细长条。
@@ -388,7 +388,7 @@ export default function App() {
         <div className="message-list" ref={listRef}>
           {messages.length === 0 ? (
             <div className="empty-state">
-              <h2>开始和 nanobot 对话</h2>
+              <h2>开始 对话</h2>
               <p>先在左侧创建或打开一个会话，然后发送文本、图片或文件。</p>
             </div>
           ) : null}
